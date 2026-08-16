@@ -119,7 +119,20 @@ if "analyst_notes" not in st.session_state:
 # ---------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------
-st.sidebar.header("Settings")
+st.sidebar.markdown(
+    """
+    <div style="padding: 8px 0 18px 0;">
+        <h2 style="margin:0;">📈 Market Intelligence</h2>
+        <p style="margin:4px 0 0 0; opacity:0.65; font-size:0.85rem;">
+            Early Warning & Research
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧭 Navigation")
 mode = st.sidebar.radio("Mode", ["Single Company Analysis", "Compare Companies", "Market Screener"])
 research_mode = st.sidebar.checkbox("Research Mode (show raw data & extra stats)", value=False)
 years = st.sidebar.slider("Years of history", 1, 10, 5)
