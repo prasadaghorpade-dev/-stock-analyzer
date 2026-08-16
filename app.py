@@ -8,7 +8,12 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------------
 # PAGE CONFIG & STYLING
 # ---------------------------------------------------------------
-st.set_page_config(page_title="Stock Risk Analyzer", layout="wide", page_icon="📊")
+st.set_page_config(
+    page_title="Market Intelligence | Early Warning",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 st.markdown("""
 <style>
@@ -58,9 +63,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-header">Stock Risk & Anomaly Analyzer</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub-header">Historical price, volume and news pattern analysis for Indian equities</p>',
+    '<p class="main-header">Market Intelligence & Early Warning</p>',
+    unsafe_allow_html=True
+)
+st.markdown(
+    '<p class="sub-header">Market analysis • Risk intelligence • Early-warning signals • Paper trading</p>',
     unsafe_allow_html=True
 )
 
