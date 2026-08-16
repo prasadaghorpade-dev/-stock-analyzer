@@ -28,6 +28,8 @@ def fetch_data(ticker, years):
     end = datetime.today()
     start = end - timedelta(days=years * 365)
     data = yf.download(ticker, start=start, end=end, progress=False)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
     return data
 
 
@@ -38,7 +40,7 @@ def find_big_moves(data, threshold_pct):
     big_moves = []
     for date, ret in monthly_returns.items():
         if abs(ret) >= threshold_pct:
-            move_type = "PROFIT 📈" if ret > 0 else "LOSS 📉"
+            move_type = "PROFIT" if ret > 0 else "LOSS"
             big_moves.append({
                 "Month": date.strftime("%B %Y"),
                 "Type": move_type,
@@ -49,8 +51,8 @@ def find_big_moves(data, threshold_pct):
 
 def generate_summary(ticker, data, big_moves_df):
     total_return = ((data["Close"].iloc[-1] - data["Close"].iloc[0]) / data["Close"].iloc[0]) * 100
-    profit_months = len(big_moves_df[big_moves_df["Type"] == "PROFIT 📈"]) if not big_moves_df.empty else 0
-    loss_months = len(big_moves_df[big_moves_df["Type"] == "LOSS 📉"]) if not big_moves_df.empty else 0
+    profit_months = len(big_moves_df[big_moves_df["Type"] == "PROFIT"]) if not big_moves_df.empty else 0
+    loss_months = len(big_moves_df[big_moves_df["Type"] == "LOSS"]) if not big_moves_df.empty else 0
 
     high = data["Close"].max()
     low = data["Close"].min()
@@ -64,7 +66,7 @@ def generate_summary(ticker, data, big_moves_df):
     - Mothi PROFIT months: {profit_months}
     - Mothi LOSS months: {loss_months}
 
-    ⚠️ Ha fakt **past data cha summary** aahe. Future madhe asach hoil
+    Ha fakt past data cha summary aahe. Future madhe asach hoil
     yachi koni guarantee deu shakat nahi. Nirnay ghenyapurvi swataha research kara.
     """
     return summary
@@ -92,7 +94,7 @@ if analyze_btn:
         else:
             st.info("Nivडलelya threshold peksha mothi halchal sapadli nahi.")
 
-        st.subheader("📋 Analysis Summary")
+        st.subheader("Analysis Summary")
         st.markdown(generate_summary(ticker_input, data, big_moves_df))
 
     elif data is not None and data.empty:
@@ -100,4 +102,3 @@ if analyze_btn:
 
 else:
     st.info("Sidebar madhe stock symbol taka ani 'Analysis Suru Kara' button daba.")
-  
