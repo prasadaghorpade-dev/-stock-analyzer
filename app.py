@@ -8,12 +8,7 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------------
 # PAGE CONFIG & STYLING
 # ---------------------------------------------------------------
-st.set_page_config(
-    page_title="Market Intelligence | Early Warning",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Stock Risk Analyzer", layout="wide", page_icon="📊")
 
 st.markdown("""
 <style>
@@ -63,12 +58,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown('<p class="main-header">Stock Risk & Anomaly Analyzer</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="main-header">Market Intelligence & Early Warning</p>',
-    unsafe_allow_html=True
-)
-st.markdown(
-    '<p class="sub-header">Market analysis • Risk intelligence • Early-warning signals • Paper trading</p>',
+    '<p class="sub-header">Historical price, volume and news pattern analysis for Indian equities</p>',
     unsafe_allow_html=True
 )
 
@@ -111,6 +103,12 @@ SECTORS = {
 
 NIFTY_INDEX = "^NSEI"
 
+INDICES = {
+    "NIFTY 50": "^NSEI",
+    "SENSEX": "^BSESN",
+    "BANK NIFTY": "^NSEBANK",
+}
+
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = []
 if "analyst_notes" not in st.session_state:
@@ -119,21 +117,11 @@ if "analyst_notes" not in st.session_state:
 # ---------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------
-st.sidebar.markdown(
-    """
-    <div style="padding: 8px 0 18px 0;">
-        <h2 style="margin:0;">📈 Market Intelligence</h2>
-        <p style="margin:4px 0 0 0; opacity:0.65; font-size:0.85rem;">
-            Early Warning & Research
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True
+st.sidebar.header("Settings")
+mode = st.sidebar.radio(
+    "Mode",
+    ["Daily Market Update", "Single Company Analysis", "Compare Companies", "Market Screener", "Methodology & Disclaimer"]
 )
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧭 Navigation")
-mode = st.sidebar.radio("Mode", ["Single Company Analysis", "Compare Companies", "Market Screener"])
 research_mode = st.sidebar.checkbox("Research Mode (show raw data & extra stats)", value=False)
 years = st.sidebar.slider("Years of history", 1, 10, 5)
 price_threshold = st.sidebar.slider(
@@ -511,10 +499,178 @@ def run_market_screener(years, volume_multiplier, price_threshold, pump_dump_win
     return screener_df, cross_df
 
 
+def get_daily_snapshot():
+    """Fetches last 2 trading days for indices and all tracked companies to build a daily update."""
+    index_rows = []
+    for name, ticker in INDICES.items():
+        try:
+            data = yf.download(ticker, period="5d", progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            if len(data) >= 2:
+                last_close = data["Close"].iloc[-1]
+                prev_close = data["Close"].iloc[-2]
+                change_pct = ((last_close - prev_close) / prev_close) * 100
+                index_rows.append({
+                    "Index": name, "Last Close": round(float(last_close), 2),
+                    "Change %": round(float(change_pct), 2), "Date": data.index[-1].strftime("%Y-%m-%d")
+                })
+        except Exception:
+            continue
+
+    company_rows = []
+    for name, ticker in COMPANIES.items():
+        try:
+            data = yf.download(ticker, period="5d", progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            if len(data) >= 2:
+                last_close = data["Close"].iloc[-1]
+                prev_close = data["Close"].iloc[-2]
+                change_pct = ((last_close - prev_close) / prev_close) * 100
+                last_volume = data["Volume"].iloc[-1]
+                avg_volume = data["Volume"].mean()
+                volume_ratio = last_volume / avg_volume if avg_volume else 0
+                company_rows.append({
+                    "Company": name, "Ticker": ticker, "Sector": SECTORS.get(ticker, "Other"),
+                    "Last Close": round(float(last_close), 2), "Change %": round(float(change_pct), 2),
+                    "Volume": int(last_volume), "Volume vs Avg": round(float(volume_ratio), 2)
+                })
+        except Exception:
+            continue
+
+    return pd.DataFrame(index_rows), pd.DataFrame(company_rows)
+
+
+def calculate_technical_indicators(data):
+    df = data.copy()
+    df["MA20"] = df["Close"].rolling(window=20).mean()
+    df["MA50"] = df["Close"].rolling(window=50).mean()
+    df["MA200"] = df["Close"].rolling(window=200).mean()
+
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = ema12 - ema26
+    df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+
+    df["Resistance"] = df["Close"].rolling(window=20).max()
+    df["Support"] = df["Close"].rolling(window=20).min()
+
+    return df
+
+
+def get_company_profile(ticker):
+    try:
+        info = yf.Ticker(ticker).info
+        return {
+            "Name": info.get("longName", ticker),
+            "Sector": info.get("sector", SECTORS.get(ticker, "Unknown")),
+            "Industry": info.get("industry", "Unknown"),
+            "Market Cap": info.get("marketCap"),
+            "52 Week High": info.get("fiftyTwoWeekHigh"),
+            "52 Week Low": info.get("fiftyTwoWeekLow"),
+            "Website": info.get("website", "N/A"),
+        }
+    except Exception:
+        return {}
+
+
+def filter_by_timeframe(data, timeframe):
+    if timeframe == "1D":
+        return data.tail(2)
+    elif timeframe == "1W":
+        return data.tail(5)
+    elif timeframe == "1M":
+        return data.tail(22)
+    elif timeframe == "1Y":
+        return data.tail(252)
+    else:
+        return data
+
+
+def find_breakouts_breakdowns(data):
+    df = data.copy()
+    df["Resistance"] = df["Close"].rolling(window=20).max().shift(1)
+    df["Support"] = df["Close"].rolling(window=20).min().shift(1)
+    breakout = df[df["Close"] > df["Resistance"]]
+    breakdown = df[df["Close"] < df["Support"]]
+    return breakout, breakdown
+
+
+# ---------------------------------------------------------------
+# DAILY MARKET UPDATE MODE
+# ---------------------------------------------------------------
+if mode == "Daily Market Update":
+    st.markdown("### Daily Market Update")
+    st.caption(
+        "Snapshot based on the most recent available trading data (may be delayed, not real-time). "
+        "Covers Nifty 50, Sensex, Bank Nifty, and the 10 tracked companies."
+    )
+    refresh_btn = st.sidebar.button("Refresh Daily Update", type="primary")
+
+    if refresh_btn or "daily_snapshot_loaded" not in st.session_state:
+        with st.spinner("Fetching latest market snapshot..."):
+            index_df, company_df = get_daily_snapshot()
+        st.session_state.daily_snapshot_loaded = True
+        st.session_state.index_df = index_df
+        st.session_state.company_df = company_df
+    else:
+        index_df = st.session_state.get("index_df", pd.DataFrame())
+        company_df = st.session_state.get("company_df", pd.DataFrame())
+
+    if not index_df.empty:
+        st.markdown("#### Market Indices")
+        idx_cols = st.columns(len(index_df))
+        for i, row in index_df.iterrows():
+            with idx_cols[i]:
+                st.metric(row["Index"], f"{row['Last Close']:,}", f"{row['Change %']}%")
+        st.caption(f"As of {index_df['Date'].iloc[0]}")
+    else:
+        st.info("Could not fetch index data right now.")
+
+    if not company_df.empty:
+        st.markdown("#### Top Gainers (Tracked Companies)")
+        gainers = company_df.sort_values("Change %", ascending=False).head(5)
+        st.dataframe(gainers[["Company", "Last Close", "Change %", "Sector"]], use_container_width=True)
+
+        st.markdown("#### Top Losers (Tracked Companies)")
+        losers = company_df.sort_values("Change %", ascending=True).head(5)
+        st.dataframe(losers[["Company", "Last Close", "Change %", "Sector"]], use_container_width=True)
+
+        st.markdown("#### Most Active by Volume")
+        most_active = company_df.sort_values("Volume", ascending=False).head(5)
+        st.dataframe(most_active[["Company", "Volume", "Last Close", "Change %"]], use_container_width=True)
+
+        st.markdown("#### Unusual Volume Today (vs Average)")
+        unusual = company_df[company_df["Volume vs Avg"] >= 1.5].sort_values("Volume vs Avg", ascending=False)
+        if not unusual.empty:
+            st.dataframe(unusual[["Company", "Volume vs Avg", "Change %"]], use_container_width=True)
+        else:
+            st.info("No unusual volume activity detected today among tracked companies.")
+
+        st.markdown("#### Sector Performance Today")
+        sector_perf = company_df.groupby("Sector")["Change %"].mean().reset_index().sort_values("Change %", ascending=False)
+        sector_fig = go.Figure(go.Bar(x=sector_perf["Sector"], y=sector_perf["Change %"]))
+        sector_fig.update_layout(xaxis_title="Sector", yaxis_title="Average Change %", height=350)
+        st.plotly_chart(sector_fig, use_container_width=True)
+
+        st.markdown("#### Full Snapshot Table")
+        st.dataframe(company_df.sort_values("Change %", ascending=False), use_container_width=True)
+    else:
+        st.info("Click 'Refresh Daily Update' in the sidebar to load today's snapshot.")
+
+
+
 # ---------------------------------------------------------------
 # SINGLE COMPANY MODE
 # ---------------------------------------------------------------
-if mode == "Single Company Analysis":
+elif mode == "Single Company Analysis":
     st.sidebar.subheader("Select Company")
     company_name = st.sidebar.selectbox("Company", list(COMPANIES.keys()))
     custom_ticker = st.sidebar.text_input("Or enter a custom ticker (optional)", value="")
@@ -571,13 +727,26 @@ if mode == "Single Company Analysis":
             cq2.metric("Model Confidence Score", f"{confidence_score}/100")
             st.write("")
 
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                "Overview", "Anomaly Detection", "News & AI Explanation",
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "Overview", "Chart & Indicators", "Anomaly Detection", "News & AI Explanation",
                 "Backtesting & Timeline", "Audit Trail & Export",
                 "Investigation Workspace", "Paper Trading"
             ])
 
             with tab1:
+                profile = get_company_profile(ticker_input)
+                if profile:
+                    st.markdown("#### Company Profile")
+                    p1, p2, p3 = st.columns(3)
+                    p1.write(f"**Name:** {profile.get('Name', '-')}")
+                    p1.write(f"**Sector:** {profile.get('Sector', '-')}")
+                    p2.write(f"**Industry:** {profile.get('Industry', '-')}")
+                    mcap = profile.get("Market Cap")
+                    p2.write(f"**Market Cap:** Rs {mcap:,.0f}" if mcap else "**Market Cap:** N/A")
+                    p3.write(f"**52W High:** Rs {profile.get('52 Week High', 0):.2f}" if profile.get('52 Week High') else "**52W High:** N/A")
+                    p3.write(f"**52W Low:** Rs {profile.get('52 Week Low', 0):.2f}" if profile.get('52 Week Low') else "**52W Low:** N/A")
+                    st.write("")
+
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Closing Price"))
                 fig.update_layout(xaxis_title="Date", yaxis_title="Price (Rs)", height=420)
@@ -586,6 +755,61 @@ if mode == "Single Company Analysis":
                 st.markdown(generate_summary(ticker_input, data, find_big_monthly_moves(data, price_threshold), risk_score))
 
             with tab2:
+                st.markdown("#### Professional Chart")
+                chart_col1, chart_col2 = st.columns(2)
+                with chart_col1:
+                    chart_type = st.radio("Chart Type", ["Candlestick", "Line"], horizontal=True, key="chart_type")
+                with chart_col2:
+                    timeframe = st.radio("Timeframe", ["1D", "1W", "1M", "1Y", "5Y"], horizontal=True, index=4, key="timeframe")
+
+                tf_data = filter_by_timeframe(data, timeframe)
+                ind_data = calculate_technical_indicators(data)
+                tf_ind_data = filter_by_timeframe(ind_data, timeframe)
+
+                show_ma = st.checkbox("Show Moving Averages (20/50/200)", value=True)
+                show_support_resistance = st.checkbox("Show Support / Resistance (20-day)", value=False)
+
+                price_fig = go.Figure()
+                if chart_type == "Candlestick" and len(tf_data) > 1:
+                    price_fig.add_trace(go.Candlestick(
+                        x=tf_data.index, open=tf_data["Open"], high=tf_data["High"],
+                        low=tf_data["Low"], close=tf_data["Close"], name="Price"
+                    ))
+                else:
+                    price_fig.add_trace(go.Scatter(x=tf_data.index, y=tf_data["Close"], name="Close", line=dict(color="lightblue")))
+
+                if show_ma:
+                    price_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["MA20"], name="MA 20", line=dict(width=1)))
+                    price_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["MA50"], name="MA 50", line=dict(width=1)))
+                    price_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["MA200"], name="MA 200", line=dict(width=1)))
+                if show_support_resistance:
+                    price_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["Resistance"], name="Resistance", line=dict(color="red", dash="dot")))
+                    price_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["Support"], name="Support", line=dict(color="green", dash="dot")))
+
+                price_fig.update_layout(height=450, xaxis_title="Date", yaxis_title="Price (Rs)", xaxis_rangeslider_visible=False)
+                st.plotly_chart(price_fig, use_container_width=True)
+
+                st.markdown("#### Volume")
+                vol_fig = go.Figure(go.Bar(x=tf_data.index, y=tf_data["Volume"]))
+                vol_fig.update_layout(height=200, xaxis_title="Date", yaxis_title="Volume")
+                st.plotly_chart(vol_fig, use_container_width=True)
+
+                st.markdown("#### RSI (14)")
+                rsi_fig = go.Figure()
+                rsi_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["RSI"], name="RSI"))
+                rsi_fig.add_hline(y=70, line_dash="dot", line_color="red")
+                rsi_fig.add_hline(y=30, line_dash="dot", line_color="green")
+                rsi_fig.update_layout(height=250, yaxis_title="RSI")
+                st.plotly_chart(rsi_fig, use_container_width=True)
+
+                st.markdown("#### MACD")
+                macd_fig = go.Figure()
+                macd_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["MACD"], name="MACD"))
+                macd_fig.add_trace(go.Scatter(x=tf_ind_data.index, y=tf_ind_data["MACD_Signal"], name="Signal"))
+                macd_fig.update_layout(height=250, yaxis_title="MACD")
+                st.plotly_chart(macd_fig, use_container_width=True)
+
+            with tab3:
                 st.markdown("#### Volume Anomaly Detection")
                 if not volume_spikes.empty:
                     st.dataframe(volume_spikes[["Close", "Volume", "Volume_Avg_30d"]].tail(20), use_container_width=True)
@@ -612,7 +836,7 @@ if mode == "Single Company Analysis":
                 else:
                     st.info("No volume-price divergence detected.")
 
-            with tab3:
+            with tab4:
                 st.markdown("#### Recent News")
                 with st.spinner("Fetching recent news..."):
                     news_df = fetch_news(ticker_input)
@@ -640,7 +864,7 @@ if mode == "Single Company Analysis":
                 )
                 st.markdown(explanation_text)
 
-            with tab4:
+            with tab5:
                 st.markdown("#### Company Risk Timeline")
                 timeline_fig = go.Figure()
                 timeline_fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Price", line=dict(color="lightblue")))
@@ -669,7 +893,7 @@ if mode == "Single Company Analysis":
                 else:
                     st.info("No monthly moves exceeded the selected threshold.")
 
-            with tab5:
+            with tab6:
                 st.markdown("#### Audit Trail - Every Alert and Why It Was Generated")
                 audit_df = build_audit_trail(volume_spikes, price_anomalies, pump_dump_df, divergence_df, volume_multiplier)
                 if not audit_df.empty:
@@ -686,7 +910,7 @@ if mode == "Single Company Analysis":
                     st.download_button("Download Audit Trail (CSV)", data=audit_csv,
                                         file_name=f"{ticker_input}_audit_trail.csv", mime="text/csv")
 
-            with tab6:
+            with tab7:
                 st.markdown("#### What-Changed Analysis")
                 st.caption("Compares the first half vs second half of the selected period.")
                 changes = what_changed_analysis(data)
@@ -730,7 +954,7 @@ if mode == "Single Company Analysis":
                     st.markdown("Descriptive statistics:")
                     st.dataframe(data[["Close", "Volume"]].describe(), use_container_width=True)
 
-            with tab7:
+            with tab8:
                 st.markdown("#### Paper Trading (Virtual Simulation)")
                 st.caption(
                     "Practice buying and selling with virtual money at the latest available closing price. "
@@ -784,6 +1008,39 @@ if mode == "Single Company Analysis":
                             })
                             st.rerun()
 
+                st.markdown("#### Stop-Loss / Target Simulation")
+                st.caption(
+                    "Set a stop-loss and target for your current holding in this stock. "
+                    "This checks against the latest available price each time you run analysis - "
+                    "it does not auto-execute trades in real time."
+                )
+                if "paper_sl_target" not in st.session_state:
+                    st.session_state.paper_sl_target = {}
+
+                sl_col, tgt_col = st.columns(2)
+                existing_sl_tgt = st.session_state.paper_sl_target.get(ticker_input, {})
+                with sl_col:
+                    stop_loss = st.number_input(
+                        "Stop-Loss Price (Rs)", min_value=0.0,
+                        value=float(existing_sl_tgt.get("stop_loss", 0.0)), key="sl_input"
+                    )
+                with tgt_col:
+                    target_price = st.number_input(
+                        "Target Price (Rs)", min_value=0.0,
+                        value=float(existing_sl_tgt.get("target", 0.0)), key="tgt_input"
+                    )
+                if st.button("Save Stop-Loss / Target"):
+                    st.session_state.paper_sl_target[ticker_input] = {
+                        "stop_loss": stop_loss, "target": target_price
+                    }
+                    st.success("Stop-loss and target saved for this session.")
+
+                if current_shares > 0:
+                    if stop_loss > 0 and latest_price <= stop_loss:
+                        st.error(f"Stop-loss triggered: latest price Rs {latest_price:.2f} is at or below stop-loss Rs {stop_loss:.2f}")
+                    if target_price > 0 and latest_price >= target_price:
+                        st.success(f"Target reached: latest price Rs {latest_price:.2f} is at or above target Rs {target_price:.2f}")
+
                 st.markdown("#### Portfolio Holdings")
                 holdings_rows = []
                 total_holdings_value = 0
@@ -808,6 +1065,27 @@ if mode == "Single Company Analysis":
                                f"Rs {st.session_state.paper_cash + total_holdings_value:,.2f}")
                 else:
                     st.info("No holdings yet. Use Buy above to start your simulation.")
+
+                st.markdown("#### P&L Analytics")
+                if st.session_state.paper_log:
+                    log_df = pd.DataFrame(st.session_state.paper_log)
+                    ticker_log = log_df[log_df["Ticker"] == ticker_input]
+                    total_bought = ticker_log[ticker_log["Action"] == "BUY"]["Total"].sum()
+                    total_sold = ticker_log[ticker_log["Action"] == "SELL"]["Total"].sum()
+                    realized_pnl = total_sold - ticker_log[ticker_log["Action"] == "SELL"]["Qty"].sum() * \
+                        (ticker_log[ticker_log["Action"] == "BUY"]["Total"].sum() /
+                         ticker_log[ticker_log["Action"] == "BUY"]["Qty"].sum()) if not ticker_log[ticker_log["Action"] == "BUY"].empty and not ticker_log[ticker_log["Action"] == "SELL"].empty else 0
+                    unrealized_value = current_shares * latest_price
+                    avg_buy_price = (ticker_log[ticker_log["Action"] == "BUY"]["Total"].sum() /
+                                      ticker_log[ticker_log["Action"] == "BUY"]["Qty"].sum()) if not ticker_log[ticker_log["Action"] == "BUY"].empty else 0
+                    unrealized_pnl = (latest_price - avg_buy_price) * current_shares if avg_buy_price else 0
+
+                    pnl1, pnl2, pnl3 = st.columns(3)
+                    pnl1.metric("Average Buy Price", f"Rs {avg_buy_price:.2f}" if avg_buy_price else "N/A")
+                    pnl2.metric("Unrealized P&L (current holding)", f"Rs {unrealized_pnl:,.2f}")
+                    pnl3.metric("Current Position Value", f"Rs {unrealized_value:,.2f}")
+                else:
+                    st.info("No trades yet for P&L analytics.")
 
                 st.markdown("#### Trade Log")
                 if st.session_state.paper_log:
@@ -882,7 +1160,7 @@ elif mode == "Compare Companies":
 # ---------------------------------------------------------------
 # MARKET SCREENER MODE
 # ---------------------------------------------------------------
-else:
+elif mode == "Market Screener":
     st.markdown("### Market-Wide Screener - All Tracked Companies")
     st.caption(
         "Runs anomaly detection across all 10 tracked companies at once. "
@@ -933,6 +1211,34 @@ else:
             else:
                 st.info("No overlapping multi-company anomaly dates found in the recent window.")
 
+            st.markdown("#### Breakouts, Breakdowns & Volatility Scanner")
+            breakout_rows, volatility_rows = [], []
+            for _, row in screener_df.iterrows():
+                ticker = row["Ticker"]
+                try:
+                    stock_data = fetch_data(ticker, years)
+                except Exception:
+                    continue
+                if stock_data.empty:
+                    continue
+                breakout_df, breakdown_df = find_breakouts_breakdowns(stock_data)
+                daily_vol = stock_data["Close"].pct_change().std() * 100
+                if not breakout_df.empty and stock_data.index[-1] in breakout_df.index:
+                    breakout_rows.append({"Company": row["Company"], "Status": "Breakout (above 20-day resistance)"})
+                if not breakdown_df.empty and stock_data.index[-1] in breakdown_df.index:
+                    breakout_rows.append({"Company": row["Company"], "Status": "Breakdown (below 20-day support)"})
+                volatility_rows.append({"Company": row["Company"], "Daily Volatility %": round(daily_vol, 2)})
+
+            if breakout_rows:
+                st.dataframe(pd.DataFrame(breakout_rows), use_container_width=True)
+            else:
+                st.info("No current breakouts or breakdowns detected.")
+
+            if volatility_rows:
+                vol_df = pd.DataFrame(volatility_rows).sort_values("Daily Volatility %", ascending=False)
+                st.markdown("**Volatility Ranking (highest to lowest):**")
+                st.dataframe(vol_df, use_container_width=True)
+
             screener_csv = screener_df.to_csv(index=False).encode("utf-8")
             st.download_button("Download Screener Report (CSV)", data=screener_csv,
                                 file_name="market_screener_report.csv", mime="text/csv")
@@ -944,3 +1250,53 @@ else:
     if st.session_state.watchlist:
         st.markdown("### Your Watchlist")
         st.write(", ".join(st.session_state.watchlist))
+
+# ---------------------------------------------------------------
+# METHODOLOGY & DISCLAIMER PAGE
+# ---------------------------------------------------------------
+else:
+    st.markdown("### Methodology & Disclaimer")
+
+    st.markdown("""
+#### What this tool does
+This is a student-built research tool for studying historical price, volume and news patterns
+of 10 major Indian listed companies. It uses free, publicly available data (Yahoo Finance)
+and applies rule-based statistical methods to flag unusual activity.
+
+#### What this tool does NOT do
+- It does **not** confirm fraud, insider trading, or market manipulation.
+- It does **not** use live or real-time prices - all data is delayed (typically by minutes to a day).
+- It does **not** provide investment advice or stock recommendations.
+- It does **not** access paid regulatory data such as promoter pledge filings, related-party
+  transaction disclosures, or corporate governance filings - these require paid institutional
+  data feeds that are not available for free.
+
+#### How the Risk Score is calculated
+The Early Warning Risk Score (0-100) is a weighted combination of four rule-based signals:
+- Volume anomalies (days with volume far above the 30-day average)
+- Price anomalies (single-day moves beyond a set threshold)
+- Pump-and-dump style patterns (sharp rise followed by a sharp fall in a short window)
+- Volume-price divergence (high volume with very little price movement)
+
+This is a statistical heuristic, not a machine-learning model trained on confirmed fraud cases,
+because no such labeled dataset is freely available. Precision/recall metrics are therefore not
+reported, since there is no verified ground truth to measure against.
+
+#### Data sources
+- Price, volume and news data: Yahoo Finance (via the yfinance library)
+- Company sector classification: manually assigned for the 10 tracked companies
+
+#### Paper Trading
+The paper trading feature uses virtual money only. No real trades are placed. Portfolio data
+is stored only for your current browser session and is lost on refresh, since this app does not
+use a persistent database.
+
+#### Intended use
+This project is intended for educational purposes - to practice data analysis, pattern detection,
+and software development. It is not a substitute for professional financial research or advice.
+""")
+
+    st.info(
+        "If you are using this for a school project or competition, you are welcome to reference "
+        "this methodology page to explain how the tool works and its limitations."
+    )
