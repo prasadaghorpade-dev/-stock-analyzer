@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------------
 # PAGE CONFIG & STYLING
 # ---------------------------------------------------------------
-st.set_page_config(page_title="Stock Risk Analyzer", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Market Intelligence | Early Warning", layout="wide", page_icon="📈", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -58,9 +58,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-header">Stock Risk & Anomaly Analyzer</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-header">Market Intelligence & Early Warning</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub-header">Historical price, volume and news pattern analysis for Indian equities</p>',
+    '<p class="sub-header">Market analysis • Risk intelligence • Early-warning signals • Paper trading</p>',
     unsafe_allow_html=True
 )
 
@@ -117,7 +117,19 @@ if "analyst_notes" not in st.session_state:
 # ---------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------
-st.sidebar.header("Settings")
+st.sidebar.markdown(
+    """
+    <div style="padding: 8px 0 18px 0;">
+        <h2 style="margin:0;">📈 Market Intelligence</h2>
+        <p style="margin:4px 0 0 0; opacity:0.65; font-size:0.85rem;">
+            Early Warning & Research
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧭 Navigation")
 mode = st.sidebar.radio(
     "Mode",
     ["Daily Market Update", "Single Company Analysis", "Compare Companies", "Market Screener", "Methodology & Disclaimer"]
@@ -581,6 +593,48 @@ def get_company_profile(ticker):
         return {}
 
 
+def get_fundamentals(ticker):
+    try:
+        info = yf.Ticker(ticker).info
+        return {
+            "Revenue (TTM)": info.get("totalRevenue"),
+            "Profit Margin": info.get("profitMargins"),
+            "EPS (TTM)": info.get("trailingEps"),
+            "P/E Ratio": info.get("trailingPE"),
+            "P/B Ratio": info.get("priceToBook"),
+            "Debt to Equity": info.get("debtToEquity"),
+            "Return on Equity": info.get("returnOnEquity"),
+            "Dividend Yield": info.get("dividendYield"),
+        }
+    except Exception:
+        return {}
+
+
+def format_fundamental_value(key, value):
+    if value is None:
+        return "Data unavailable"
+    if key in ["Profit Margin", "Return on Equity", "Dividend Yield"]:
+        return f"{value * 100:.2f}%" if isinstance(value, (int, float)) else "Data unavailable"
+    if key == "Revenue (TTM)":
+        return f"Rs {value:,.0f}" if isinstance(value, (int, float)) else "Data unavailable"
+    if isinstance(value, (int, float)):
+        return f"{value:.2f}"
+    return "Data unavailable"
+
+
+def get_corporate_calendar(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        cal = stock.calendar
+        rows = []
+        if isinstance(cal, dict) and cal:
+            for key, val in cal.items():
+                rows.append({"Event": key, "Details": str(val)})
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
 def filter_by_timeframe(data, timeframe):
     if timeframe == "1D":
         return data.tail(2)
@@ -612,6 +666,13 @@ if mode == "Daily Market Update":
         "Snapshot based on the most recent available trading data (may be delayed, not real-time). "
         "Covers Nifty 50, Sensex, Bank Nifty, and the 10 tracked companies."
     )
+    st.markdown(
+        f'<div style="background-color:#1f2937;padding:6px 12px;border-radius:6px;font-size:0.85rem;'
+        f'display:inline-block;">Last updated: {datetime.now().strftime("%Y-%m-%d %H:%M")} '
+        f'(local device time) | Data status: delayed, not real-time</div>',
+        unsafe_allow_html=True
+    )
+    st.write("")
     refresh_btn = st.sidebar.button("Refresh Daily Update", type="primary")
 
     if refresh_btn or "daily_snapshot_loaded" not in st.session_state:
@@ -625,6 +686,16 @@ if mode == "Daily Market Update":
         company_df = st.session_state.get("company_df", pd.DataFrame())
 
     if not index_df.empty:
+        avg_index_change = index_df["Change %"].mean()
+        if avg_index_change > 0.3:
+            trend_label, trend_class = "Bullish", "risk-badge-low"
+        elif avg_index_change < -0.3:
+            trend_label, trend_class = "Bearish", "risk-badge-high"
+        else:
+            trend_label, trend_class = "Neutral", "risk-badge-moderate"
+        st.markdown(f'**Market Trend:** <span class="{trend_class}">{trend_label}</span>', unsafe_allow_html=True)
+        st.write("")
+
         st.markdown("#### Market Indices")
         idx_cols = st.columns(len(index_df))
         for i, row in index_df.iterrows():
@@ -662,6 +733,22 @@ if mode == "Daily Market Update":
 
         st.markdown("#### Full Snapshot Table")
         st.dataframe(company_df.sort_values("Change %", ascending=False), use_container_width=True)
+
+        st.markdown("#### Alert Center")
+        st.caption("Simple price and volume alerts for tracked companies, based on today's snapshot.")
+        alert_rows = []
+        for _, row in company_df.iterrows():
+            if abs(row["Change %"]) >= 5:
+                alert_rows.append({"Company": row["Company"], "Alert": f"Price moved {row['Change %']}% today", "Type": "Price Alert"})
+            if row["Volume vs Avg"] >= 2:
+                alert_rows.append({"Company": row["Company"], "Alert": f"Volume is {row['Volume vs Avg']}x the average", "Type": "Volume Alert"})
+            if row["Company"] in [c for c in st.session_state.watchlist if c in COMPANIES.values()] or \
+               COMPANIES.get(row["Company"]) in st.session_state.watchlist:
+                alert_rows.append({"Company": row["Company"], "Alert": "On your watchlist", "Type": "Watchlist Alert"})
+        if alert_rows:
+            st.dataframe(pd.DataFrame(alert_rows), use_container_width=True)
+        else:
+            st.info("No alerts triggered today for tracked companies.")
     else:
         st.info("Click 'Refresh Daily Update' in the sidebar to load today's snapshot.")
 
@@ -734,6 +821,7 @@ elif mode == "Single Company Analysis":
             ])
 
             with tab1:
+                st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')} (local device time) | Data status: delayed, not real-time")
                 profile = get_company_profile(ticker_input)
                 if profile:
                     st.markdown("#### Company Profile")
@@ -753,6 +841,24 @@ elif mode == "Single Company Analysis":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("#### Analysis Summary")
                 st.markdown(generate_summary(ticker_input, data, find_big_monthly_moves(data, price_threshold), risk_score))
+
+                st.markdown("#### Fundamentals")
+                st.caption("Where data is not available from the free data source, it is shown as 'Data unavailable' rather than an estimate.")
+                fundamentals = get_fundamentals(ticker_input)
+                if fundamentals:
+                    f1, f2, f3, f4 = st.columns(4)
+                    cols = [f1, f2, f3, f4]
+                    for i, (key, val) in enumerate(fundamentals.items()):
+                        cols[i % 4].metric(key, format_fundamental_value(key, val))
+                else:
+                    st.info("Fundamental data unavailable for this ticker.")
+
+                st.markdown("#### Corporate Calendar")
+                cal_df = get_corporate_calendar(ticker_input)
+                if not cal_df.empty:
+                    st.dataframe(cal_df, use_container_width=True)
+                else:
+                    st.info("No upcoming corporate events found for this ticker from the free data source.")
 
             with tab2:
                 st.markdown("#### Professional Chart")
