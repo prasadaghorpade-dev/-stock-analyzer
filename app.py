@@ -1,3 +1,19 @@
+import requests
+
+AI_URL = "YOUR_AI_API_URL"
+
+def ask_ai(question, stock_data=None):
+    response = requests.post(
+        AI_URL,
+        json={
+            "question": question,
+            "stock_data": stock_data or {}
+        },
+        timeout=60
+    )
+
+    response.raise_for_status()
+    return response.json()["answer"]
 import streamlit as st
 import yfinance as yf
 import pandas as pd
