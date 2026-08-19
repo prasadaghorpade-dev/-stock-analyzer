@@ -200,9 +200,21 @@ if "jump_mode" in st.session_state:
 
 mode = st.sidebar.radio(
     "Mode",
-    ["Daily Market Update", "Single Company Analysis", "Compare Companies", "Market Screener", "Methodology & Disclaimer"],
+    ["Daily Market Update", "Single Company Analysis", "Portfolio", "Compare Companies", "Market Screener", "Methodology & Disclaimer"],
     key="mode_radio"
 )
+
+st.sidebar.markdown("---")
+st.sidebar.markdown('<p class="ticker-tag">⚡ QUICK JUMP - COMPANIES</p>', unsafe_allow_html=True)
+st.sidebar.caption("Tap a company to instantly open its live chart, historical analysis and paper trading.")
+for c_name, c_ticker in COMPANIES.items():
+    if st.sidebar.button(c_name, key=f"quickjump_{c_ticker}", use_container_width=True):
+        st.session_state["jump_mode"] = "Single Company Analysis"
+        st.session_state["jump_company"] = c_name
+        st.session_state["auto_run"] = True
+        st.rerun()
+
+st.sidebar.markdown("---")
 research_mode = st.sidebar.checkbox("Research Mode (show raw data & extra stats)", value=False)
 years = st.sidebar.slider("Years of history", 1, 10, 5)
 price_threshold = st.sidebar.slider(
@@ -926,6 +938,8 @@ elif mode == "Single Company Analysis":
 
             st.markdown('<div class="section-live-trading">', unsafe_allow_html=True)
             st.markdown('<p class="ticker-tag">🟢 LIVE PAPER TRADING (virtual money)</p>', unsafe_allow_html=True)
+            latest_data_date = data.index[-1].strftime("%Y-%m-%d")
+            st.caption(f"Price as of last available trading data: {latest_data_date}. Not real-time - free data source updates with a delay.")
             qp1, qp2, qp3, qp4 = st.columns(4)
             qp1.metric("Latest Price", f"Rs {latest_price_quick:.2f}")
             qp2.metric("Shares Held", f"{shares_held_quick}")
@@ -1388,6 +1402,119 @@ elif mode == "Single Company Analysis":
             st.warning("No data found for this symbol. Please check the ticker (e.g. TCS.NS).")
     else:
         st.info("Select a company in the sidebar and click 'Run Analysis' to begin.")
+
+# ---------------------------------------------------------------
+# PORTFOLIO MODE
+# ---------------------------------------------------------------
+elif mode == "Portfolio":
+    st.markdown('<p class="ticker-tag">🟢 YOUR PAPER TRADING PORTFOLIO</p>', unsafe_allow_html=True)
+    st.caption(
+        "Consolidated view of all your simulated holdings across tracked companies. "
+        "Virtual money only - resets if you refresh or close the app."
+    )
+
+    if "paper_cash" not in st.session_state:
+        st.session_state.paper_cash = 100000.0
+    if "paper_holdings" not in st.session_state:
+        st.session_state.paper_holdings = {}
+    if "paper_log" not in st.session_state:
+        st.session_state.paper_log = []
+
+    ticker_to_name = {v: k for k, v in COMPANIES.items()}
+    held_tickers = {t: s for t, s in st.session_state.paper_holdings.items() if s > 0}
+
+    if not held_tickers:
+        st.info("You have no open holdings yet. Use the Quick Jump list in the sidebar to open a company and start paper trading.")
+        st.metric("Virtual Cash Available", f"Rs {st.session_state.paper_cash:,.2f}")
+    else:
+        with st.spinner("Fetching latest prices for your holdings..."):
+            log_df_all = pd.DataFrame(st.session_state.paper_log)
+            portfolio_rows = []
+            total_current_value = 0
+            total_invested = 0
+
+            for ticker, shares in held_tickers.items():
+                try:
+                    stock_data = fetch_data(ticker, 1)
+                except Exception:
+                    continue
+                if stock_data.empty:
+                    continue
+                current_price = float(stock_data["Close"].iloc[-1])
+
+                ticker_log = log_df_all[log_df_all["Ticker"] == ticker] if not log_df_all.empty else pd.DataFrame()
+                avg_buy = 0
+                if not ticker_log.empty and not ticker_log[ticker_log["Action"] == "BUY"].empty:
+                    buy_rows = ticker_log[ticker_log["Action"] == "BUY"]
+                    avg_buy = buy_rows["Total"].sum() / buy_rows["Qty"].sum()
+
+                current_value = shares * current_price
+                invested_value = shares * avg_buy if avg_buy else 0
+                pnl = current_value - invested_value
+                pnl_pct = (pnl / invested_value * 100) if invested_value else 0
+
+                total_current_value += current_value
+                total_invested += invested_value
+
+                company_name = ticker_to_name.get(ticker, ticker)
+                portfolio_rows.append({
+                    "Company": company_name, "Ticker": ticker, "Sector": SECTORS.get(ticker, "Other"),
+                    "Shares": shares, "Avg Buy Price": round(avg_buy, 2), "Current Price": round(current_price, 2),
+                    "Current Value": round(current_value, 2), "P&L": round(pnl, 2), "P&L %": round(pnl_pct, 2)
+                })
+
+        if portfolio_rows:
+            portfolio_df = pd.DataFrame(portfolio_rows)
+            total_pnl = total_current_value - total_invested
+            total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
+            total_portfolio_value = total_current_value + st.session_state.paper_cash
+
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric("Total Portfolio Value", f"Rs {total_portfolio_value:,.2f}")
+            pc2.metric("Virtual Cash", f"Rs {st.session_state.paper_cash:,.2f}")
+            pc3.metric("Holdings Value", f"Rs {total_current_value:,.2f}")
+            pc4.metric("Total P&L", f"Rs {total_pnl:,.2f}", f"{total_pnl_pct:.2f}%")
+
+            st.markdown("#### Holdings")
+            st.dataframe(portfolio_df, use_container_width=True)
+
+            st.markdown("#### Sector Allocation")
+            sector_alloc = portfolio_df.groupby("Sector")["Current Value"].sum().reset_index()
+            alloc_fig = go.Figure(data=[go.Pie(labels=sector_alloc["Sector"], values=sector_alloc["Current Value"], hole=0.4)])
+            alloc_fig.update_layout(height=400)
+            st.plotly_chart(alloc_fig, use_container_width=True)
+
+            st.markdown("#### Company Allocation")
+            company_fig = go.Figure(data=[go.Pie(labels=portfolio_df["Company"], values=portfolio_df["Current Value"], hole=0.4)])
+            company_fig.update_layout(height=400)
+            st.plotly_chart(company_fig, use_container_width=True)
+
+            st.markdown("#### Portfolio Risk Snapshot")
+            st.caption("Average risk score across your currently held companies, based on the same anomaly detection engine used elsewhere in this app.")
+            risk_rows = []
+            for _, row in portfolio_df.iterrows():
+                try:
+                    stock_data = fetch_data(row["Ticker"], years)
+                except Exception:
+                    continue
+                if stock_data.empty:
+                    continue
+                _, vs = detect_volume_anomalies(stock_data, volume_multiplier)
+                _, pa = detect_price_anomalies(stock_data)
+                pdd = detect_pump_and_dump(stock_data, pump_dump_window)
+                dv = detect_volume_price_divergence(stock_data, volume_multiplier)
+                rs = calculate_risk_score(len(vs), len(pa), len(pdd), len(dv), len(stock_data))
+                risk_rows.append({"Company": row["Company"], "Risk Score": rs})
+            if risk_rows:
+                risk_df = pd.DataFrame(risk_rows)
+                st.dataframe(risk_df, use_container_width=True)
+                st.metric("Average Portfolio Risk Score", f"{risk_df['Risk Score'].mean():.1f}/100")
+
+            portfolio_csv = portfolio_df.to_csv(index=False).encode("utf-8")
+            st.download_button("Download Portfolio Report (CSV)", data=portfolio_csv,
+                                file_name="portfolio_report.csv", mime="text/csv")
+        else:
+            st.warning("Could not fetch current prices for your holdings. Please try again.")
 
 # ---------------------------------------------------------------
 # COMPARE COMPANIES MODE
