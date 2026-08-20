@@ -1,2 +1,0 @@
-# No required packages for the AI feature layer itself.
-# Your existing Streamlit application keeps its own requirements.
